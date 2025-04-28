@@ -4,8 +4,8 @@ public class PreventNoteDeletionHandler {
     // This makes it easy to add new record types without changing the code
     private static final Set<String> PROTECTED_RECORD_TYPES = new Set<String>{
         '48C',      // Matches any record type containing 48C, including Eco48C
-        'Secure',   // Example: Add any other record types to protect
-        'Protected' // Example: Another potential protected record type
+        '30D',
+        'Test'
     };
     
     /*
