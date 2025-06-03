@@ -161,3 +161,79 @@ Thank you for your attention. I'm happy to answer any questions you may have abo
 * What training will be provided to users?
 * How do we handle article versions and updates?
 * What happens when an article needs to be retired?
+
+
+
+
+
+// Replace with your actual Integration User Id
+Id integrationUserId = '005XXXXXXXXXXXX';
+
+// Step 1: Query Funding Requests with RecordType 'ECO48C'
+List<Outfunds_funding_reequest__c> fundingRequests = [
+    SELECT Id, Name
+    FROM Outfunds_funding_reequest__c
+    WHERE RecordType.DeveloperName = 'ECO48C'
+];
+
+Set<Id> fundingRequestIds = new Set<Id>();
+Map<Id, String> requestIdToName = new Map<Id, String>();
+for (Outfunds_funding_reequest__c fr : fundingRequests) {
+    fundingRequestIds.add(fr.Id);
+    requestIdToName.put(fr.Id, fr.Name);
+}
+
+// Step 2: Get ContentDocumentLinks for those records
+List<ContentDocumentLink> cdlList = [
+    SELECT ContentDocumentId, LinkedEntityId
+    FROM ContentDocumentLink
+    WHERE LinkedEntityId IN :fundingRequestIds
+];
+
+Set<Id> linkedContentDocIds = new Set<Id>();
+Map<Id, Id> docIdToRequestId = new Map<Id, Id>();
+for (ContentDocumentLink cdl : cdlList) {
+    linkedContentDocIds.add(cdl.ContentDocumentId);
+    docIdToRequestId.put(cdl.ContentDocumentId, cdl.LinkedEntityId);
+}
+
+// Step 3: Get ContentVersions uploaded by Integration User
+List<ContentVersion> versions = [
+    SELECT ContentDocumentId
+    FROM ContentVersion
+    WHERE ContentDocumentId IN :linkedContentDocIds
+    AND CreatedById = :integrationUserId
+];
+
+Set<Id> validContentDocIds = new Set<Id>();
+for (ContentVersion ver : versions) {
+    validContentDocIds.add(ver.ContentDocumentId);
+}
+
+// Step 4: Fetch ContentDocuments matching filtered IDs
+List<ContentDocument> docs = [
+    SELECT Id, Title, FileExtension, ContentSize
+    FROM ContentDocument
+    WHERE Id IN :validContentDocIds
+];
+
+// Step 5: Group by Funding Request Name
+Map<String, List<ContentDocument>> groupedResults = new Map<String, List<ContentDocument>>();
+for (ContentDocument doc : docs) {
+    Id requestId = docIdToRequestId.get(doc.Id);
+    String requestName = requestIdToName.get(requestId);
+    if (String.isNotBlank(requestName)) {
+        if (!groupedResults.containsKey(requestName)) {
+            groupedResults.put(requestName, new List<ContentDocument>());
+        }
+        groupedResults.get(requestName).add(doc);
+    }
+}
+
+// Step 6: Debug Output
+for (String name : groupedResults.keySet()) {
+    System.debug('Funding Request: ' + name);
+    for (ContentDocument d : groupedResults.get(name)) {
+        System.debug('    Title: ' + d.Title + ', Extension: ' + d.FileExtension + ', Size: ' + d.ContentSize);
+    }
+}
