@@ -163,7 +163,8 @@ Thank you for your attention. I'm happy to answer any questions you may have abo
 * What happens when an article needs to be retired?
 
 
-'''
+
+```
 // Step 1: Query relevant Outfunds_funding_request__c records
 List<Outfunds_funding_request__c> fundingRequests = [
     SELECT Id, Name
@@ -221,4 +222,4 @@ for (String name : grouped.keySet()) {
         System.debug(row);
     }
 }
-'''
+```
