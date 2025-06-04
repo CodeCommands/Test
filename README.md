@@ -161,3 +161,64 @@ Thank you for your attention. I'm happy to answer any questions you may have abo
 * What training will be provided to users?
 * How do we handle article versions and updates?
 * What happens when an article needs to be retired?
+
+
+'''
+// Step 1: Query relevant Outfunds_funding_request__c records
+List<Outfunds_funding_request__c> fundingRequests = [
+    SELECT Id, Name
+    FROM Outfunds_funding_request__c
+    WHERE Outfunds_FundingProgram__r.Name = '2023 48C Application'
+];
+
+Set<Id> requestIds = new Set<Id>();
+Map<Id, String> requestIdToName = new Map<Id, String>();
+for (Outfunds_funding_request__c fr : fundingRequests) {
+    requestIds.add(fr.Id);
+    requestIdToName.put(fr.Id, fr.Name);
+}
+
+// Step 2: Query ContentDocumentLinks
+List<ContentDocumentLink> links = [
+    SELECT ContentDocumentId, LinkedEntityId
+    FROM ContentDocumentLink
+    WHERE LinkedEntityId IN :requestIds
+];
+
+Set<Id> docIds = new Set<Id>();
+Map<Id, Id> docIdToRequestId = new Map<Id, Id>();
+for (ContentDocumentLink cdl : links) {
+    docIds.add(cdl.ContentDocumentId);
+    docIdToRequestId.put(cdl.ContentDocumentId, cdl.LinkedEntityId);
+}
+
+// Step 3: Query ContentDocuments
+List<ContentDocument> docs = [
+    SELECT Id, Title, FileExtension, ContentSize
+    FROM ContentDocument
+    WHERE Id IN :docIds
+];
+
+// Step 4: Grouping and Output
+Map<String, List<ContentDocument>> grouped = new Map<String, List<ContentDocument>>();
+for (ContentDocument doc : docs) {
+    Id requestId = docIdToRequestId.get(doc.Id);
+    String requestName = requestIdToName.get(requestId);
+
+    if (!grouped.containsKey(requestName)) {
+        grouped.put(requestName, new List<ContentDocument>());
+    }
+    grouped.get(requestName).add(doc);
+}
+
+// Step 5: CSV Output with Size in KB
+System.debug('FundingRequestName,Title,FileExtension,SizeKB');
+for (String name : grouped.keySet()) {
+    for (ContentDocument doc : grouped.get(name)) {
+        Decimal sizeKB = (Decimal.valueOf(doc.ContentSize)) / 1024;
+        String sizeKBStr = String.valueOf(sizeKB.setScale(2));
+        String row = '"' + name + '","' + doc.Title + '","' + doc.FileExtension + '",' + sizeKBStr;
+        System.debug(row);
+    }
+}
+'''
