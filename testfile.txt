@@ -14,6 +14,10 @@
 public class CaseCommentDomain extends fflib_SObjectDomain {
 
 ```
+// Constants
+private static final String ECO48C_RECORDTYPE_NAME = 'ECO48C';
+private static Id ECO48C_RECORDTYPE_ID;
+
 public CaseCommentDomain(List<CaseComment> records) {
     super(records);
 }
@@ -28,17 +32,60 @@ public override void onAfterInsert() {
     publishCaseCommentEvents((List<CaseComment>) Records);
 }
 
+/**
+ * Get ECO48C Record Type ID (cached)
+ */
+private static Id getECO48CRecordTypeId() {
+    if (ECO48C_RECORDTYPE_ID == null) {
+        ECO48C_RECORDTYPE_ID = Schema.SObjectType.Case.getRecordTypeInfosByName()
+            .get(ECO48C_RECORDTYPE_NAME)?.getRecordTypeId();
+    }
+    return ECO48C_RECORDTYPE_ID;
+}
+
+/**
+ * Publish platform events only for ECO48C Case record type
+ */
 private void publishCaseCommentEvents(List<CaseComment> comments) {
+    if (comments.isEmpty()) return;
+    
+    // Get ECO48C Record Type ID
+    Id eco48cRecordTypeId = getECO48CRecordTypeId();
+    if (eco48cRecordTypeId == null) {
+        System.debug('ECO48C Record Type not found. Platform events will not be published.');
+        return;
+    }
+    
+    // Get parent Case IDs to query their record types
+    Set<Id> parentCaseIds = new Set<Id>();
+    for (CaseComment comment : comments) {
+        parentCaseIds.add(comment.ParentId);
+    }
+    
+    // Query parent Cases to get their record types
+    Map<Id, Case> parentCasesMap = new Map<Id, Case>([
+        SELECT Id, RecordTypeId 
+        FROM Case 
+        WHERE Id IN :parentCaseIds
+    ]);
+    
+    // Filter comments for ECO48C Cases only
     List<Case_Comment_Added__e> events = new List<Case_Comment_Added__e>();
     
     for (CaseComment comment : comments) {
-        events.add(new Case_Comment_Added__e(
-            Case_Id__c = comment.ParentId,
-            Comment_Id__c = comment.Id,
-            User_Id__c = comment.CreatedById
-        ));
+        Case parentCase = parentCasesMap.get(comment.ParentId);
+        
+        // Only publish event if parent Case has ECO48C record type
+        if (parentCase != null && parentCase.RecordTypeId == eco48cRecordTypeId) {
+            events.add(new Case_Comment_Added__e(
+                Case_Id__c = comment.ParentId,
+                Comment_Id__c = comment.Id,
+                User_Id__c = comment.CreatedById
+            ));
+        }
     }
     
+    // Publish events if any qualify
     if (!events.isEmpty()) {
         List<Database.SaveResult> results = EventBus.publish(events);
         
@@ -48,6 +95,10 @@ private void publishCaseCommentEvents(List<CaseComment> comments) {
                 System.debug('Error publishing event: ' + results[i].getErrors());
             }
         }
+        
+        System.debug('Published ' + events.size() + ' platform events for ECO48C Cases');
+    } else {
+        System.debug('No platform events published - no ECO48C Cases found in this batch');
     }
 }
 ```
@@ -76,10 +127,11 @@ import { ShowToastEvent } from ‘lightning/platformShowToastEvent’;
 
 // Case fields to track
 import CASE_ID_FIELD from ‘@salesforce/schema/Case.Id’;
+import CASE_RECORDTYPE_ID from ‘@salesforce/schema/Case.RecordTypeId’;
 import CASE_LAST_MODIFIED_DATE from ‘@salesforce/schema/Case.LastModifiedDate’;
-import CASE_COMMENT_COUNT from ‘@salesforce/schema/Case.CommentCount’;
+import CASE_STATUS from ‘@salesforce/schema/Case.Status’;
 
-const FIELDS = [CASE_ID_FIELD, CASE_LAST_MODIFIED_DATE, CASE_COMMENT_COUNT];
+const FIELDS = [CASE_ID_FIELD, CASE_RECORDTYPE_ID, CASE_LAST_MODIFIED_DATE, CASE_STATUS];
 
 export default class CaseDetailRefresh extends LightningElement {
 @api recordId;
@@ -88,22 +140,68 @@ export default class CaseDetailRefresh extends LightningElement {
 subscription = {};
 channelName = '/event/Case_Comment_Added__e';
 wiredCaseResult;
+eco48cRecordTypeId;
 
 @wire(getRecord, { recordId: '$recordId', fields: FIELDS })
 wiredCase(result) {
     this.wiredCaseResult = result;
     if (result.error) {
         console.error('Error loading case:', result.error);
+    } else if (result.data) {
+        // Check if this is an ECO48C case and setup subscription accordingly
+        this.checkRecordTypeAndSubscribe();
     }
 }
 
 connectedCallback() {
-    this.handleSubscribe();
     this.registerErrorListener();
+    // We'll subscribe after we confirm the record type
 }
 
 disconnectedCallback() {
     this.handleUnsubscribe();
+}
+
+/**
+ * Check if this is ECO48C record type and subscribe only if it is
+ */
+checkRecordTypeAndSubscribe() {
+    if (!this.wiredCaseResult.data) return;
+    
+    const recordTypeId = getFieldValue(this.wiredCaseResult.data, CASE_RECORDTYPE_ID);
+    
+    // Get ECO48C Record Type ID
+    this.getECO48CRecordTypeId().then(eco48cId => {
+        if (recordTypeId === eco48cId) {
+            console.log('ECO48C Case detected - subscribing to platform events');
+            this.handleSubscribe();
+        } else {
+            console.log('Non-ECO48C Case - platform event subscription not needed');
+            // Optionally show a message or handle differently
+        }
+    }).catch(error => {
+        console.error('Error getting ECO48C Record Type ID:', error);
+    });
+}
+
+/**
+ * Get ECO48C Record Type ID using getRecordTypeInfosByName
+ */
+async getECO48CRecordTypeId() {
+    if (this.eco48cRecordTypeId) {
+        return this.eco48cRecordTypeId;
+    }
+    
+    try {
+        // Use dynamic approach to get record type ID
+        const recordTypeInfo = await import('@salesforce/apex/CaseRecordTypeHelper.getECO48CRecordTypeId');
+        this.eco48cRecordTypeId = await recordTypeInfo.default();
+        return this.eco48cRecordTypeId;
+    } catch (error) {
+        // Fallback: hardcode if you know the ID, or use custom metadata
+        console.error('Could not dynamically get ECO48C Record Type ID:', error);
+        throw error;
+    }
 }
 
 // Subscribe to platform event
@@ -127,9 +225,11 @@ handleSubscribe() {
 
 // Unsubscribe from platform event
 handleUnsubscribe() {
-    unsubscribe(this.subscription, response => {
-        console.log('Unsubscribed from channel:', response.channel);
-    });
+    if (this.subscription && this.subscription.channel) {
+        unsubscribe(this.subscription, response => {
+            console.log('Unsubscribed from channel:', response.channel);
+        });
+    }
 }
 
 // Register error listener
@@ -141,7 +241,7 @@ registerErrorListener() {
 
 // Handle case comment added event
 handleCaseCommentAdded(payload) {
-    console.log('Case comment added for case:', payload.Case_Id__c);
+    console.log('Case comment added for ECO48C case:', payload.Case_Id__c);
     
     // Refresh the case record data
     this.refreshCaseData();
@@ -186,9 +286,16 @@ get lastModifiedDate() {
     return getFieldValue(this.caseData, CASE_LAST_MODIFIED_DATE);
 }
 
-// Getter for comment count
-get commentCount() {
-    return getFieldValue(this.caseData, CASE_COMMENT_COUNT);
+// Getter for case status
+get caseStatus() {
+    return getFieldValue(this.caseData, CASE_STATUS);
+}
+
+// Getter to check if this is ECO48C case
+get isECO48CCase() {
+    if (!this.caseData || !this.eco48cRecordTypeId) return false;
+    const recordTypeId = getFieldValue(this.caseData, CASE_RECORDTYPE_ID);
+    return recordTypeId === this.eco48cRecordTypeId;
 }
 ```
 
@@ -230,10 +337,10 @@ minute="2-digit">
 </div>
 <div class="slds-col slds-size_1-of-2">
 <div class="slds-form-element">
-<label class="slds-form-element__label">Comment Count</label>
+<label class="slds-form-element__label">Case Status</label>
 <div class="slds-form-element__control">
 <span class="slds-badge slds-badge_lightest">
-{commentCount}
+{caseStatus}
 </span>
 </div>
 </div>
@@ -303,32 +410,119 @@ public List<CaseComment> selectByParentId(Set<Id> parentIds) {
 }
 
 // ========================================
-// 8. TEST CLASS
+// 8. HELPER CLASS FOR RECORD TYPE
+// ========================================
+public class CaseRecordTypeHelper {
+
+```
+private static final String ECO48C_RECORDTYPE_NAME = 'ECO48C';
+
+@AuraEnabled(cacheable=true)
+public static Id getECO48CRecordTypeId() {
+    try {
+        RecordType eco48cRecordType = [
+            SELECT Id 
+            FROM RecordType 
+            WHERE SObjectType = 'Case' 
+            AND Name = :ECO48C_RECORDTYPE_NAME 
+            LIMIT 1
+        ];
+        return eco48cRecordType.Id;
+    } catch (QueryException e) {
+        System.debug('ECO48C Record Type not found: ' + e.getMessage());
+        return null;
+    }
+}
+
+@AuraEnabled(cacheable=true)
+public static Boolean isECO48CCase(Id caseId) {
+    try {
+        Id eco48cRecordTypeId = getECO48CRecordTypeId();
+        if (eco48cRecordTypeId == null) return false;
+        
+        Case caseRecord = [
+            SELECT RecordTypeId 
+            FROM Case 
+            WHERE Id = :caseId 
+            LIMIT 1
+        ];
+        
+        return caseRecord.RecordTypeId == eco48cRecordTypeId;
+    } catch (QueryException e) {
+        System.debug('Error checking case record type: ' + e.getMessage());
+        return false;
+    }
+}
+```
+
+}
+
+// ========================================
+// 9. TEST CLASS
 // ========================================
 @IsTest
 private class CaseCommentDomainTest {
 
 ```
+private static Id ECO48C_RECORDTYPE_ID;
+private static Id STANDARD_RECORDTYPE_ID;
+
 @TestSetup
 static void setupTestData() {
-    // Create test case
-    Case testCase = new Case(
-        Subject = 'Test Case',
+    // Get Record Type IDs
+    List<RecordType> recordTypes = [
+        SELECT Id, Name 
+        FROM RecordType 
+        WHERE SObjectType = 'Case' 
+        AND (Name = 'ECO48C' OR Name = 'Standard')
+    ];
+    
+    for (RecordType rt : recordTypes) {
+        if (rt.Name == 'ECO48C') {
+            ECO48C_RECORDTYPE_ID = rt.Id;
+        } else if (rt.Name == 'Standard') {
+            STANDARD_RECORDTYPE_ID = rt.Id;
+        }
+    }
+    
+    // Create test cases with different record types
+    List<Case> testCases = new List<Case>();
+    
+    // ECO48C Case
+    if (ECO48C_RECORDTYPE_ID != null) {
+        testCases.add(new Case(
+            Subject = 'ECO48C Test Case',
+            Status = 'New',
+            Origin = 'Web',
+            RecordTypeId = ECO48C_RECORDTYPE_ID
+        ));
+    }
+    
+    // Standard Case
+    testCases.add(new Case(
+        Subject = 'Standard Test Case',
         Status = 'New',
-        Origin = 'Web'
-    );
-    insert testCase;
+        Origin = 'Web',
+        RecordTypeId = STANDARD_RECORDTYPE_ID
+    ));
+    
+    insert testCases;
 }
 
 @IsTest
-static void testCaseCommentTrigger() {
-    // Get test case
-    Case testCase = [SELECT Id FROM Case LIMIT 1];
+static void testCaseCommentTrigger_ECO48C_Case() {
+    // Get ECO48C test case
+    Case eco48cCase = [
+        SELECT Id, RecordTypeId 
+        FROM Case 
+        WHERE Subject = 'ECO48C Test Case' 
+        LIMIT 1
+    ];
     
-    // Create test comment
+    // Create test comment for ECO48C case
     CaseComment comment = new CaseComment(
-        ParentId = testCase.Id,
-        CommentBody = 'Test comment'
+        ParentId = eco48cCase.Id,
+        CommentBody = 'Test comment for ECO48C case'
     );
     
     Test.startTest();
@@ -336,30 +530,94 @@ static void testCaseCommentTrigger() {
     Test.stopTest();
     
     // Verify comment was created
-    List<CaseComment> comments = [SELECT Id FROM CaseComment WHERE ParentId = :testCase.Id];
-    System.assertEquals(1, comments.size(), 'Comment should be created');
+    List<CaseComment> comments = [
+        SELECT Id FROM CaseComment 
+        WHERE ParentId = :eco48cCase.Id
+    ];
+    System.assertEquals(1, comments.size(), 'Comment should be created for ECO48C case');
 }
 
 @IsTest
-static void testPlatformEventPublishing() {
-    // Get test case
-    Case testCase = [SELECT Id FROM Case LIMIT 1];
+static void testCaseCommentTrigger_Standard_Case() {
+    // Get Standard test case
+    Case standardCase = [
+        SELECT Id, RecordTypeId 
+        FROM Case 
+        WHERE Subject = 'Standard Test Case' 
+        LIMIT 1
+    ];
     
-    // Subscribe to platform event (in a real test, you'd need to use Test.enableChangeDataCapture())
-    Test.startTest();
-    
-    // Create test comment
+    // Create test comment for Standard case
     CaseComment comment = new CaseComment(
-        ParentId = testCase.Id,
-        CommentBody = 'Test comment for platform event'
+        ParentId = standardCase.Id,
+        CommentBody = 'Test comment for Standard case'
     );
-    insert comment;
     
+    Test.startTest();
+    insert comment;
     Test.stopTest();
     
-    // In a real scenario, you would verify the platform event was published
-    // This requires additional setup with Change Data Capture in tests
-    System.assertNotEquals(null, comment.Id, 'Comment should be created');
+    // Verify comment was created (but platform event should not be published)
+    List<CaseComment> comments = [
+        SELECT Id FROM CaseComment 
+        WHERE ParentId = :standardCase.Id
+    ];
+    System.assertEquals(1, comments.size(), 'Comment should be created for Standard case');
+    // Note: In a real test scenario, you would verify that no platform event was published
+}
+
+@IsTest
+static void testBulkCommentInsertion() {
+    // Get both test cases
+    List<Case> testCases = [
+        SELECT Id, RecordTypeId, Subject 
+        FROM Case 
+        WHERE Subject IN ('ECO48C Test Case', 'Standard Test Case')
+    ];
+    
+    List<CaseComment> comments = new List<CaseComment>();
+    
+    for (Case testCase : testCases) {
+        comments.add(new CaseComment(
+            ParentId = testCase.Id,
+            CommentBody = 'Bulk test comment for ' + testCase.Subject
+        ));
+    }
+    
+    Test.startTest();
+    insert comments;
+    Test.stopTest();
+    
+    // Verify comments were created
+    List<CaseComment> insertedComments = [
+        SELECT Id, ParentId FROM CaseComment 
+        WHERE ParentId IN :new List<Id>{testCases[0].Id, testCases[1].Id}
+    ];
+    System.assertEquals(2, insertedComments.size(), 'Both comments should be created');
+}
+
+@IsTest
+static void testCaseRecordTypeHelper() {
+    Test.startTest();
+    
+    // Test getting ECO48C Record Type ID
+    Id eco48cId = CaseRecordTypeHelper.getECO48CRecordTypeId();
+    
+    if (ECO48C_RECORDTYPE_ID != null) {
+        System.assertEquals(ECO48C_RECORDTYPE_ID, eco48cId, 'Should return correct ECO48C Record Type ID');
+        
+        // Test ECO48C case check
+        Case eco48cCase = [SELECT Id FROM Case WHERE Subject = 'ECO48C Test Case' LIMIT 1];
+        Boolean isECO48C = CaseRecordTypeHelper.isECO48CCase(eco48cCase.Id);
+        System.assertEquals(true, isECO48C, 'Should identify ECO48C case correctly');
+    }
+    
+    // Test Standard case check
+    Case standardCase = [SELECT Id FROM Case WHERE Subject = 'Standard Test Case' LIMIT 1];
+    Boolean isStandardECO48C = CaseRecordTypeHelper.isECO48CCase(standardCase.Id);
+    System.assertEquals(false, isStandardECO48C, 'Should identify non-ECO48C case correctly');
+    
+    Test.stopTest();
 }
 ```
 
@@ -405,8 +663,14 @@ public static final fflib_Application.SelectorFactory Selector =
   - Case_Id__c (Text, 18)
   - Comment_Id__c (Text, 18)
   - User_Id__c (Text, 18)
+- Set Publish Behavior: “Publish After Commit”
+1. Create ECO48C Record Type (if not exists):
+- Go to Setup > Object Manager > Case > Record Types
+- Create record type with Name = “ECO48C”
+- Note the API Name for reference
 1. Deploy Apex Classes:
 - CaseCommentDomain.cls
+- CaseRecordTypeHelper.cls
 - CaseCommentSelector.cls (optional)
 - CaseCommentDomainTest.cls
 - Update Application.cls with domain bindings
@@ -416,13 +680,18 @@ public static final fflib_Application.SelectorFactory Selector =
 - caseDetailRefresh.js
 - caseDetailRefresh.html
 - caseDetailRefresh.js-meta.xml
-1. Add Component to Case Record Page:
+1. Configure Lightning Record Page:
 - Go to Setup > Lightning App Builder
-- Edit Case Record Page
+- Edit Case Record Page OR create new page for ECO48C record type
 - Add “Case Detail Refresh” component
 - Save and activate
-1. Test:
-- Navigate to a Case record
-- Add a comment
-- Verify the page refreshes and shows toast notification
+- IMPORTANT: Assign this page layout only to ECO48C record type if desired
+1. Test Scenarios:
+- Create ECO48C Case -> Add comment -> Verify refresh + toast
+- Create Standard Case -> Add comment -> Verify NO refresh/toast
+- Test bulk comment insertion with mixed record types
+1. Optional Enhancements:
+- Create Custom Metadata Types to store record type settings
+- Add permission checks for platform event subscription
+- Implement custom settings for enabling/disabling feature per profile
   */
