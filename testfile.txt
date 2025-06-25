@@ -120,10 +120,11 @@ fflib_SObjectDomain.triggerHandler(CaseCommentDomain.class);
 // ========================================
 // caseDetailRefresh.js
 import { LightningElement, api, wire } from ‘lwc’;
-import { refreshApex } from ‘@salesforce/apex’;
 import { getRecord, getFieldValue } from ‘lightning/uiRecordApi’;
 import { subscribe, unsubscribe, onError } from ‘lightning/empApi’;
 import { ShowToastEvent } from ‘lightning/platformShowToastEvent’;
+import { NavigationMixin } from ‘lightning/navigation’;
+import getECO48CRecordTypeId from ‘@salesforce/apex/CaseRecordTypeHelper.getECO48CRecordTypeId’;
 
 // Case fields to track
 import CASE_ID_FIELD from ‘@salesforce/schema/Case.Id’;
@@ -133,7 +134,7 @@ import CASE_STATUS from ‘@salesforce/schema/Case.Status’;
 
 const FIELDS = [CASE_ID_FIELD, CASE_RECORDTYPE_ID, CASE_LAST_MODIFIED_DATE, CASE_STATUS];
 
-export default class CaseDetailRefresh extends LightningElement {
+export default class CaseDetailRefresh extends NavigationMixin(LightningElement) {
 @api recordId;
 
 ```
@@ -166,17 +167,24 @@ disconnectedCallback() {
  * Check if this is ECO48C record type and subscribe only if it is
  */
 checkRecordTypeAndSubscribe() {
-    if (!this.wiredCaseResult.data) return;
+    console.log('checkRecordTypeAndSubscribe called');
+    if (!this.wiredCaseResult.data) {
+        console.log('No case data available yet');
+        return;
+    }
     
     const recordTypeId = getFieldValue(this.wiredCaseResult.data, CASE_RECORDTYPE_ID);
+    console.log('Current case record type ID:', recordTypeId);
     
     // Get ECO48C Record Type ID
     this.getECO48CRecordTypeId().then(eco48cId => {
+        console.log('ECO48C Record Type ID:', eco48cId);
         if (recordTypeId === eco48cId) {
             console.log('ECO48C Case detected - subscribing to platform events');
             this.handleSubscribe();
         } else {
             console.log('Non-ECO48C Case - platform event subscription not needed');
+            console.log('Expected:', eco48cId, 'Got:', recordTypeId);
             // Optionally show a message or handle differently
         }
     }).catch(error => {
@@ -185,7 +193,7 @@ checkRecordTypeAndSubscribe() {
 }
 
 /**
- * Get ECO48C Record Type ID using getRecordTypeInfosByName
+ * Get ECO48C Record Type ID using imported Apex method
  */
 async getECO48CRecordTypeId() {
     if (this.eco48cRecordTypeId) {
@@ -193,13 +201,10 @@ async getECO48CRecordTypeId() {
     }
     
     try {
-        // Use dynamic approach to get record type ID
-        const recordTypeInfo = await import('@salesforce/apex/CaseRecordTypeHelper.getECO48CRecordTypeId');
-        this.eco48cRecordTypeId = await recordTypeInfo.default();
+        this.eco48cRecordTypeId = await getECO48CRecordTypeId();
         return this.eco48cRecordTypeId;
     } catch (error) {
-        // Fallback: hardcode if you know the ID, or use custom metadata
-        console.error('Could not dynamically get ECO48C Record Type ID:', error);
+        console.error('Could not get ECO48C Record Type ID:', error);
         throw error;
     }
 }
@@ -243,37 +248,31 @@ registerErrorListener() {
 handleCaseCommentAdded(payload) {
     console.log('Case comment added for ECO48C case:', payload.Case_Id__c);
     
-    // Refresh the case record data
-    this.refreshCaseData();
+    // Full page refresh
+    window.location.reload();
     
-    // Show toast notification
-    this.dispatchEvent(
-        new ShowToastEvent({
-            title: 'Case Updated',
-            message: 'A new comment has been added to this case.',
-            variant: 'info'
-        })
-    );
+    // Alternative options (comment out the above and uncomment one of these):
     
-    // Dispatch custom event for parent components
-    this.dispatchEvent(new CustomEvent('casecommentadded', {
-        detail: {
-            caseId: payload.Case_Id__c,
-            commentId: payload.Comment_Id__c,
-            userId: payload.User_Id__c
-        }
-    }));
-}
-
-// Refresh case data
-refreshCaseData() {
-    return refreshApex(this.wiredCaseResult)
-        .then(() => {
-            console.log('Case data refreshed successfully');
-        })
-        .catch(error => {
-            console.error('Error refreshing case data:', error);
-        });
+    // Option 2: Navigate to same page
+    // this[NavigationMixin.Navigate]({
+    //     type: 'standard__recordPage',
+    //     attributes: {
+    //         recordId: this.recordId,
+    //         actionName: 'view'
+    //     }
+    // });
+    
+    // Option 3: Toast then reload
+    // this.dispatchEvent(
+    //     new ShowToastEvent({
+    //         title: 'Case Updated',
+    //         message: 'A new comment has been added. Refreshing page...',
+    //         variant: 'info'
+    //     })
+    // );
+    // setTimeout(() => {
+    //     window.location.reload();
+    // }, 1000);
 }
 
 // Getter for case data
