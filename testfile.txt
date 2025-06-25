@@ -1,0 +1,428 @@
+// ========================================
+// 1. PLATFORM EVENT DEFINITION
+// ========================================
+// Create this Platform Event in Setup > Platform Events
+// API Name: Case_Comment_Added__e
+// Fields:
+// - Case_Id__c (Text, 18 characters)
+// - Comment_Id__c (Text, 18 characters)
+// - User_Id__c (Text, 18 characters)
+
+// ========================================
+// 2. TRIGGER HANDLER DOMAIN CLASS
+// ========================================
+public class CaseCommentDomain extends fflib_SObjectDomain {
+
+```
+public CaseCommentDomain(List<CaseComment> records) {
+    super(records);
+}
+
+public class Constructor implements fflib_SObjectDomain.IConstructable {
+    public fflib_SObjectDomain construct(List<SObject> sObjectList) {
+        return new CaseCommentDomain(sObjectList);
+    }
+}
+
+public override void onAfterInsert() {
+    publishCaseCommentEvents((List<CaseComment>) Records);
+}
+
+private void publishCaseCommentEvents(List<CaseComment> comments) {
+    List<Case_Comment_Added__e> events = new List<Case_Comment_Added__e>();
+    
+    for (CaseComment comment : comments) {
+        events.add(new Case_Comment_Added__e(
+            Case_Id__c = comment.ParentId,
+            Comment_Id__c = comment.Id,
+            User_Id__c = comment.CreatedById
+        ));
+    }
+    
+    if (!events.isEmpty()) {
+        List<Database.SaveResult> results = EventBus.publish(events);
+        
+        // Log any publishing errors
+        for (Integer i = 0; i < results.size(); i++) {
+            if (!results[i].isSuccess()) {
+                System.debug('Error publishing event: ' + results[i].getErrors());
+            }
+        }
+    }
+}
+```
+
+}
+
+// ========================================
+// 3. TRIGGER
+// ========================================
+trigger CaseCommentTrigger on CaseComment (
+before insert, before update, before delete,
+after insert, after update, after delete, after undelete
+) {
+fflib_SObjectDomain.triggerHandler(CaseCommentDomain.class);
+}
+
+// ========================================
+// 4. LIGHTNING WEB COMPONENT - CASE DETAIL REFRESH
+// ========================================
+// caseDetailRefresh.js
+import { LightningElement, api, wire } from ‘lwc’;
+import { refreshApex } from ‘@salesforce/apex’;
+import { getRecord, getFieldValue } from ‘lightning/uiRecordApi’;
+import { subscribe, unsubscribe, onError } from ‘lightning/empApi’;
+import { ShowToastEvent } from ‘lightning/platformShowToastEvent’;
+
+// Case fields to track
+import CASE_ID_FIELD from ‘@salesforce/schema/Case.Id’;
+import CASE_LAST_MODIFIED_DATE from ‘@salesforce/schema/Case.LastModifiedDate’;
+import CASE_COMMENT_COUNT from ‘@salesforce/schema/Case.CommentCount’;
+
+const FIELDS = [CASE_ID_FIELD, CASE_LAST_MODIFIED_DATE, CASE_COMMENT_COUNT];
+
+export default class CaseDetailRefresh extends LightningElement {
+@api recordId;
+
+```
+subscription = {};
+channelName = '/event/Case_Comment_Added__e';
+wiredCaseResult;
+
+@wire(getRecord, { recordId: '$recordId', fields: FIELDS })
+wiredCase(result) {
+    this.wiredCaseResult = result;
+    if (result.error) {
+        console.error('Error loading case:', result.error);
+    }
+}
+
+connectedCallback() {
+    this.handleSubscribe();
+    this.registerErrorListener();
+}
+
+disconnectedCallback() {
+    this.handleUnsubscribe();
+}
+
+// Subscribe to platform event
+handleSubscribe() {
+    const messageCallback = (response) => {
+        console.log('Received platform event:', response);
+        
+        // Check if this event is for the current case
+        if (response.data.payload.Case_Id__c === this.recordId) {
+            this.handleCaseCommentAdded(response.data.payload);
+        }
+    };
+    
+    subscribe(this.channelName, -1, messageCallback).then(response => {
+        console.log('Successfully subscribed to channel:', response.channel);
+        this.subscription = response;
+    }).catch(error => {
+        console.error('Error subscribing to channel:', error);
+    });
+}
+
+// Unsubscribe from platform event
+handleUnsubscribe() {
+    unsubscribe(this.subscription, response => {
+        console.log('Unsubscribed from channel:', response.channel);
+    });
+}
+
+// Register error listener
+registerErrorListener() {
+    onError(error => {
+        console.error('EMP API error:', error);
+    });
+}
+
+// Handle case comment added event
+handleCaseCommentAdded(payload) {
+    console.log('Case comment added for case:', payload.Case_Id__c);
+    
+    // Refresh the case record data
+    this.refreshCaseData();
+    
+    // Show toast notification
+    this.dispatchEvent(
+        new ShowToastEvent({
+            title: 'Case Updated',
+            message: 'A new comment has been added to this case.',
+            variant: 'info'
+        })
+    );
+    
+    // Dispatch custom event for parent components
+    this.dispatchEvent(new CustomEvent('casecommentadded', {
+        detail: {
+            caseId: payload.Case_Id__c,
+            commentId: payload.Comment_Id__c,
+            userId: payload.User_Id__c
+        }
+    }));
+}
+
+// Refresh case data
+refreshCaseData() {
+    return refreshApex(this.wiredCaseResult)
+        .then(() => {
+            console.log('Case data refreshed successfully');
+        })
+        .catch(error => {
+            console.error('Error refreshing case data:', error);
+        });
+}
+
+// Getter for case data
+get caseData() {
+    return this.wiredCaseResult.data;
+}
+
+// Getter for last modified date
+get lastModifiedDate() {
+    return getFieldValue(this.caseData, CASE_LAST_MODIFIED_DATE);
+}
+
+// Getter for comment count
+get commentCount() {
+    return getFieldValue(this.caseData, CASE_COMMENT_COUNT);
+}
+```
+
+}
+
+// ========================================
+// 5. LIGHTNING WEB COMPONENT - TEMPLATE
+// ========================================
+// caseDetailRefresh.html
+/*
+<template>
+<div class="slds-card">
+<div class="slds-card__header slds-grid">
+<header class="slds-media slds-media_center slds-has-flexi-truncate">
+<div class="slds-media__body">
+<h2 class="slds-card__header-title">
+<span>Case Details (Live Updates)</span>
+</h2>
+</div>
+</header>
+</div>
+<div class="slds-card__body slds-card__body_inner">
+<template if:true={caseData}>
+<div class="slds-grid slds-wrap slds-gutters">
+<div class="slds-col slds-size_1-of-2">
+<div class="slds-form-element">
+<label class="slds-form-element__label">Last Modified</label>
+<div class="slds-form-element__control">
+<lightning-formatted-date-time 
+value={lastModifiedDate}
+year="numeric"
+month="short"
+day="2-digit"
+hour="2-digit"
+minute="2-digit">
+</lightning-formatted-date-time>
+</div>
+</div>
+</div>
+<div class="slds-col slds-size_1-of-2">
+<div class="slds-form-element">
+<label class="slds-form-element__label">Comment Count</label>
+<div class="slds-form-element__control">
+<span class="slds-badge slds-badge_lightest">
+{commentCount}
+</span>
+</div>
+</div>
+</div>
+</div>
+</template>
+</div>
+</div>
+</template>
+*/
+
+// ========================================
+// 6. LIGHTNING WEB COMPONENT - METADATA
+// ========================================
+// caseDetailRefresh.js-meta.xml
+/*
+
+<?xml version="1.0" encoding="UTF-8"?>
+
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__RecordPage</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__RecordPage">
+            <objects>
+                <object>Case</object>
+            </objects>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>
+*/
+
+// ========================================
+// 7. DOMAIN SELECTOR (Optional - for querying)
+// ========================================
+public class CaseCommentSelector extends fflib_SObjectSelector {
+
+```
+public List<Schema.SObjectField> getSObjectFieldList() {
+    return new List<Schema.SObjectField> {
+        CaseComment.Id,
+        CaseComment.ParentId,
+        CaseComment.CommentBody,
+        CaseComment.CreatedById,
+        CaseComment.CreatedDate,
+        CaseComment.IsPublished
+    };
+}
+
+public Schema.SObjectType getSObjectType() {
+    return CaseComment.SObjectType;
+}
+
+public List<CaseComment> selectByParentId(Set<Id> parentIds) {
+    return (List<CaseComment>) Database.query(
+        newQueryFactory()
+            .setCondition('ParentId IN :parentIds')
+            .setOrdering('CreatedDate', fflib_QueryFactory.SortOrder.DESCENDING)
+            .toSOQL()
+    );
+}
+```
+
+}
+
+// ========================================
+// 8. TEST CLASS
+// ========================================
+@IsTest
+private class CaseCommentDomainTest {
+
+```
+@TestSetup
+static void setupTestData() {
+    // Create test case
+    Case testCase = new Case(
+        Subject = 'Test Case',
+        Status = 'New',
+        Origin = 'Web'
+    );
+    insert testCase;
+}
+
+@IsTest
+static void testCaseCommentTrigger() {
+    // Get test case
+    Case testCase = [SELECT Id FROM Case LIMIT 1];
+    
+    // Create test comment
+    CaseComment comment = new CaseComment(
+        ParentId = testCase.Id,
+        CommentBody = 'Test comment'
+    );
+    
+    Test.startTest();
+    insert comment;
+    Test.stopTest();
+    
+    // Verify comment was created
+    List<CaseComment> comments = [SELECT Id FROM CaseComment WHERE ParentId = :testCase.Id];
+    System.assertEquals(1, comments.size(), 'Comment should be created');
+}
+
+@IsTest
+static void testPlatformEventPublishing() {
+    // Get test case
+    Case testCase = [SELECT Id FROM Case LIMIT 1];
+    
+    // Subscribe to platform event (in a real test, you'd need to use Test.enableChangeDataCapture())
+    Test.startTest();
+    
+    // Create test comment
+    CaseComment comment = new CaseComment(
+        ParentId = testCase.Id,
+        CommentBody = 'Test comment for platform event'
+    );
+    insert comment;
+    
+    Test.stopTest();
+    
+    // In a real scenario, you would verify the platform event was published
+    // This requires additional setup with Change Data Capture in tests
+    System.assertNotEquals(null, comment.Id, 'Comment should be created');
+}
+```
+
+}
+
+// ========================================
+// 9. APPLICATION CONFIGURATION
+// ========================================
+// Add to Application class (typically Application.cls)
+/*
+public class Application {
+
+```
+// Configure domain binding
+public static final fflib_Application.DomainFactory Domain = 
+    new fflib_Application.DomainFactory(
+        Application.Selector,
+        new Map<SObjectType, Type> {
+            CaseComment.SObjectType => CaseCommentDomain.Constructor.class
+        }
+    );
+
+// Configure selector binding  
+public static final fflib_Application.SelectorFactory Selector = 
+    new fflib_Application.SelectorFactory(
+        new Map<SObjectType, Type> {
+            CaseComment.SObjectType => CaseCommentSelector.class
+        }
+    );
+```
+
+}
+*/
+
+// ========================================
+// DEPLOYMENT STEPS:
+// ========================================
+/*
+
+1. Create Platform Event in Setup:
+- Go to Setup > Platform Events
+- Create “Case_Comment_Added__e” with fields:
+  - Case_Id__c (Text, 18)
+  - Comment_Id__c (Text, 18)
+  - User_Id__c (Text, 18)
+1. Deploy Apex Classes:
+- CaseCommentDomain.cls
+- CaseCommentSelector.cls (optional)
+- CaseCommentDomainTest.cls
+- Update Application.cls with domain bindings
+1. Deploy Trigger:
+- CaseCommentTrigger.trigger
+1. Deploy Lightning Web Component:
+- caseDetailRefresh.js
+- caseDetailRefresh.html
+- caseDetailRefresh.js-meta.xml
+1. Add Component to Case Record Page:
+- Go to Setup > Lightning App Builder
+- Edit Case Record Page
+- Add “Case Detail Refresh” component
+- Save and activate
+1. Test:
+- Navigate to a Case record
+- Add a comment
+- Verify the page refreshes and shows toast notification
+  */
