@@ -1,0 +1,208 @@
+// Credit Application Data Extraction - Simplified for ID and Name fields only
+// Add your specific control numbers below
+
+Set<String> controlNumbers = new Set<String>{
+‘CTRL001’, // Replace with your actual control numbers
+‘CTRL002’,
+‘CTRL003’
+// Add more control numbers as needed
+};
+
+// Query Credit Applications
+Map<String, outfunds__Funding_Request__c> creditAppMap = new Map<String, outfunds__Funding_Request__c>();
+for(outfunds__Funding_Request__c app : [
+SELECT Id, Name
+FROM outfunds__Funding_Request__c
+WHERE Name IN :controlNumbers
+]) {
+creditAppMap.put(app.Name, app);
+}
+
+// Get all Credit Application Ids
+Set<Id> creditAppIds = new Set<Id>();
+for(outfunds__Funding_Request__c app : creditAppMap.values()) {
+creditAppIds.add(app.Id);
+}
+
+// Query Placed in Service records
+List<Request_for_Tax_Credit__c> placedInServiceRecords = [
+SELECT Id, Name, Credit_Application__c
+FROM Request_for_Tax_Credit__c
+WHERE Credit_Application__c IN :creditAppIds
+];
+
+// Get Placed in Service Ids
+Set<Id> placedInServiceIds = new Set<Id>();
+for(Request_for_Tax_Credit__c pis : placedInServiceRecords) {
+placedInServiceIds.add(pis.Id);
+}
+
+// Query Reviews
+List<outfunds__Review__c> reviews = [
+SELECT Id, Name, RTC__c
+FROM outfunds__Review__c
+WHERE RTC__c IN :placedInServiceIds
+];
+
+// Query Requirements
+List<outfunds__Requirement__c> requirements = [
+SELECT Id, Name, Request_for_Tax_Credit__c
+FROM outfunds__Requirement__c
+WHERE Request_for_Tax_Credit__c IN :placedInServiceIds
+];
+
+// Query ContentDocument Links (Files)
+List<ContentDocumentLink> docLinks = [
+SELECT Id, ContentDocumentId, LinkedEntityId,
+ContentDocument.Title, ContentDocument.FileType,
+ContentDocument.FileExtension, ContentDocument.ContentSize
+FROM ContentDocumentLink
+WHERE LinkedEntityId IN :placedInServiceIds
+];
+
+// =============================================================================
+// GROUPED OUTPUT BY CONTROL NUMBER
+// =============================================================================
+
+System.debug(’=== DATA EXTRACTION GROUPED BY CONTROL NUMBER ===’);
+System.debug(’’);
+
+for(String controlNum : controlNumbers) {
+if(!creditAppMap.containsKey(controlNum)) {
+System.debug(‘Control Number: ’ + controlNum + ’ - NOT FOUND’);
+System.debug(’—————————————––’);
+continue;
+}
+
+```
+System.debug('CONTROL NUMBER: ' + controlNum);
+System.debug('==========================================');
+
+Id creditAppId = creditAppMap.get(controlNum).Id;
+outfunds__Funding_Request__c app = creditAppMap.get(controlNum);
+
+// Credit Application
+System.debug('CREDIT APPLICATION:');
+System.debug('  ID: ' + app.Id);
+System.debug('  Name: ' + app.Name);
+System.debug('');
+
+// Placed in Service records for this control number
+System.debug('PLACED IN SERVICE RECORDS:');
+Integer pisCount = 0;
+for(Request_for_Tax_Credit__c pis : placedInServiceRecords) {
+    if(pis.Credit_Application__c == creditAppId) {
+        pisCount++;
+        System.debug('  ' + pisCount + '. ID: ' + pis.Id + ' | Name: ' + (pis.Name != null ? pis.Name : 'No Name'));
+        
+        // Reviews for this PIS
+        System.debug('     REVIEWS:');
+        Integer reviewCount = 0;
+        for(outfunds__Review__c review : reviews) {
+            if(review.RTC__c == pis.Id) {
+                reviewCount++;
+                System.debug('       ' + reviewCount + '. ID: ' + review.Id + ' | Name: ' + (review.Name != null ? review.Name : 'No Name'));
+            }
+        }
+        if(reviewCount == 0) {
+            System.debug('       No reviews found');
+        }
+        
+        // Requirements for this PIS
+        System.debug('     REQUIREMENTS:');
+        Integer reqCount = 0;
+        for(outfunds__Requirement__c req : requirements) {
+            if(req.Request_for_Tax_Credit__c == pis.Id) {
+                reqCount++;
+                System.debug('       ' + reqCount + '. ID: ' + req.Id + ' | Name: ' + (req.Name != null ? req.Name : 'No Name'));
+            }
+        }
+        if(reqCount == 0) {
+            System.debug('       No requirements found');
+        }
+        
+        // Files for this PIS
+        System.debug('     FILES:');
+        Integer fileCount = 0;
+        for(ContentDocumentLink link : docLinks) {
+            if(link.LinkedEntityId == pis.Id) {
+                fileCount++;
+                System.debug('       ' + fileCount + '. ID: ' + link.ContentDocumentId + 
+                             ' | Title: ' + (link.ContentDocument.Title != null ? link.ContentDocument.Title : 'No Title') +
+                             ' | Type: ' + (link.ContentDocument.FileType != null ? link.ContentDocument.FileType : 'Unknown') +
+                             ' | Extension: ' + (link.ContentDocument.FileExtension != null ? link.ContentDocument.FileExtension : 'None') +
+                             ' | Size: ' + (link.ContentDocument.ContentSize != null ? link.ContentDocument.ContentSize + ' bytes' : 'Unknown'));
+            }
+        }
+        if(fileCount == 0) {
+            System.debug('       No files found');
+        }
+        System.debug('');
+    }
+}
+if(pisCount == 0) {
+    System.debug('  No Placed in Service records found');
+}
+
+System.debug('==========================================');
+System.debug('');
+```
+
+}
+
+// =============================================================================
+// CSV FORMAT OUTPUT (for Excel export)
+// =============================================================================
+
+System.debug(’=== CSV FORMAT FOR EXCEL EXPORT ===’);
+System.debug(‘Control Number,Record Type,Record ID,Record Name,Parent ID,File Title,File Type,File Extension,File Size’);
+
+for(String controlNum : controlNumbers) {
+if(!creditAppMap.containsKey(controlNum)) continue;
+
+```
+Id creditAppId = creditAppMap.get(controlNum).Id;
+outfunds__Funding_Request__c app = creditAppMap.get(controlNum);
+
+// Credit Application row
+System.debug(controlNum + ',Credit Application,' + app.Id + ',' + app.Name + ',,,,,,');
+
+// Placed in Service records for this control number
+for(Request_for_Tax_Credit__c pis : placedInServiceRecords) {
+    if(pis.Credit_Application__c == creditAppId) {
+        System.debug(controlNum + ',Placed in Service,' + pis.Id + ',' + 
+                    (pis.Name != null ? pis.Name : '') + ',' + pis.Credit_Application__c + ',,,,,');
+        
+        // Reviews for this PIS
+        for(outfunds__Review__c review : reviews) {
+            if(review.RTC__c == pis.Id) {
+                System.debug(controlNum + ',Review,' + review.Id + ',' + 
+                            (review.Name != null ? review.Name : '') + ',' + review.RTC__c + ',,,,,');
+            }
+        }
+        
+        // Requirements for this PIS
+        for(outfunds__Requirement__c req : requirements) {
+            if(req.Request_for_Tax_Credit__c == pis.Id) {
+                System.debug(controlNum + ',Requirement,' + req.Id + ',' + 
+                            (req.Name != null ? req.Name : '') + ',' + req.Request_for_Tax_Credit__c + ',,,,,');
+            }
+        }
+        
+        // Files for this PIS
+        for(ContentDocumentLink link : docLinks) {
+            if(link.LinkedEntityId == pis.Id) {
+                System.debug(controlNum + ',File,' + link.ContentDocumentId + ',,' + link.LinkedEntityId + ',' +
+                            (link.ContentDocument.Title != null ? link.ContentDocument.Title : '') + ',' +
+                            (link.ContentDocument.FileType != null ? link.ContentDocument.FileType : '') + ',' +
+                            (link.ContentDocument.FileExtension != null ? link.ContentDocument.FileExtension : '') + ',' +
+                            (link.ContentDocument.ContentSize != null ? link.ContentDocument.ContentSize : ''));
+            }
+        }
+    }
+}
+```
+
+}
+
+System.debug(’=== EXTRACTION COMPLETE ===’);
